@@ -1,4 +1,4 @@
-// server/server.js (Final Version - Simplified Security)
+// server/server.js (FINAL VERSION - NO CSRF)
 
 // --- CORE DEPENDENCIES ---
 require('dotenv').config()
@@ -16,26 +16,37 @@ const ffmpeg = require('fluent-ffmpeg')
 const { Spitch } = require('spitch')
 const { addDays } = require('date-fns')
 
+// --- AI BRAIN ---
+const { GoogleGenerativeAI } = require('@google/generative-ai')
+
 // --- SETUP & CONFIGURATION ---
 const app = express()
 const PORT = process.env.PORT || 5000
 const JWT_SECRET = process.env.JWT_SECRET
 
 // --- CORE MIDDLEWARE ---
-app.use(cors({ origin: 'http://localhost:5173', credentials: true }))
+const allowedOrigins = ['http://localhost:5173', process.env.FRONTEND_URL];
+app.use(cors({
+    origin: function(origin, callback) {
+        if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials: true
+}));
 app.use(express.json())
 app.use(cookieParser())
 app.use('/static', express.static(path.join(__dirname, 'audio')))
 
-// --- MODELS & DB CONNECTION ---
+// --- MODELS, DB, VOICE AI SETUP ---
 const User = require('./models/User')
 const Task = require('./models/Task')
 mongoose
     .connect(process.env.MONGO_URI)
     .then(() => console.log('MongoDB connected successfully.'))
     .catch(err => console.error('MongoDB connection error:', err))
-
-// --- VOICE AI SETUP ---
 const ffmpegPath = path.join(
     process.cwd(),
     'vendor',
@@ -45,13 +56,14 @@ const ffmpegPath = path.join(
 )
 ffmpeg.setFfmpegPath(ffmpegPath)
 const spitchClient = new Spitch()
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
+const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' })
 
 // --- AUTHENTICATION MIDDLEWARE ---
 const verifyToken = (req, res, next) => {
     const token = req.cookies.token
     if (!token)
         return res.status(401).json({ message: 'Access Denied. Please log in.' })
-
     try {
         const decoded = jwt.verify(token, JWT_SECRET)
         req.user = decoded
@@ -64,26 +76,46 @@ const verifyToken = (req, res, next) => {
     }
 }
 
+// --- "AI BRAIN" FUNCTION ---
+async function analyzeTextWithGemini(text) {
+    const today = new Date().toISOString()
+    const prompt = `
+    You are an intelligent task management assistant named Aura. Your job is to analyze user commands and extract structured data.
+    You MUST respond with only a valid JSON object and nothing else.
+    Today's date is: ${today}.
+    The JSON object should have this structure:
+    { "action": "'create' or 'update' or 'read'", "task_data": { "title": "string | null", "description": "string | null", "priority": "'low'|'medium'|'high' | null", "dueDate": "ISO 8601 Date string | null", "status": "'todo'|'inprogress'|'review'|'done' | null" }, "search_query": "string for finding the task to update | null" }
+    Examples:
+    User command: "add finish the hackathon presentation, it's urgent for tomorrow"
+    Your JSON response: { "action": "create", "task_data": { "title": "Finish the hackathon pitch", "description": null, "priority": "high", "dueDate": "${addDays(
+      new Date(),
+      1
+    ).toISOString()}", "status": "todo" }, "search_query": null }
+    User command: "mark the presentation task as done"
+    Your JSON response: { "action": "update", "task_data": { "title": null, "description": null, "priority": null, "dueDate": null, "status": "done" }, "search_query": "presentation task" }
+    Now, analyze this user command: "${text}"
+  `
+    const result = await model.generateContent(prompt)
+    const response = await result.response
+    const jsonText = response
+        .text()
+        .replace(/```json|```/g, '')
+        .trim()
+    return JSON.parse(jsonText)
+}
+
 // --- ====== API ENDPOINTS ====== ---
 
 // --- AUTHENTICATION ROUTES ---
-
 app.post('/api/auth/register', async(req, res) => {
     try {
         const { email, password } = req.body
-        if (!email || !password)
+        if (!email || !password || password.length < 6)
             return res
                 .status(400)
-                .json({ message: 'Email and password are required.' })
-        if (password.length < 6)
-            return res
-                .status(400)
-                .json({ message: 'Password must be at least 6 characters.' })
+                .json({ message: 'Email and valid password are required.' })
         let user = await User.findOne({ email })
-        if (user)
-            return res
-                .status(400)
-                .json({ message: 'User with this email already exists.' })
+        if (user) return res.status(400).json({ message: 'User already exists.' })
         const salt = await bcrypt.genSalt(10)
         const hashedPassword = await bcrypt.hash(password, salt)
         user = new User({ email, password: hashedPassword })
@@ -118,26 +150,40 @@ app.post('/api/auth/login', async(req, res) => {
 })
 
 app.post('/api/auth/logout', (req, res) => {
-    // Does not need verifyToken, just needs to clear cookie
     res.clearCookie('token')
     res.json({ message: 'Logged out successfully.' })
 })
 
-// --- PROTECTED TASK ENDPOINTS (Require Auth Token) ---
-
+// --- PROTECTED ROUTES (Require Auth Token) ---
 app.get('/api/tasks', verifyToken, async(req, res) => {
     const tasks = await Task.find({ user: req.user._id }).sort({ createdAt: -1 })
     res.json(tasks)
+})
+
+app.post('/api/tasks', verifyToken, async(req, res) => {
+    try {
+        const { title, description, status, priority, dueDate } = req.body
+        if (!title) return res.status(400).json({ message: 'Title is required.' })
+        const newTask = new Task({
+            title,
+            description,
+            status: status || 'todo',
+            priority: priority || 'medium',
+            dueDate: dueDate || null,
+            user: req.user._id
+        })
+        await newTask.save()
+        res.status(201).json(newTask)
+    } catch (error) {
+        res.status(500).json({ message: 'Server error while creating task.' })
+    }
 })
 
 app.patch('/api/tasks/:id', verifyToken, async(req, res) => {
     const task = await Task.findOneAndUpdate({ _id: req.params.id, user: req.user._id },
         req.body, { new: true }
     )
-    if (!task)
-        return res
-            .status(404)
-            .json({ message: 'Task not found or you do not have permission.' })
+    if (!task) return res.status(404).json({ message: 'Task not found.' })
     res.json(task)
 })
 
@@ -146,14 +192,9 @@ app.delete('/api/tasks/:id', verifyToken, async(req, res) => {
         _id: req.params.id,
         user: req.user._id
     })
-    if (!task)
-        return res
-            .status(404)
-            .json({ message: 'Task not found or you do not have permission.' })
+    if (!task) return res.status(404).json({ message: 'Task not found.' })
     res.json({ message: 'Task deleted' })
 })
-
-// --- PROTECTED VOICE ENDPOINTS ---
 
 app.post('/api/voice-command', verifyToken, async(req, res) => {
     const formidable = await
@@ -168,14 +209,13 @@ app.post('/api/voice-command', verifyToken, async(req, res) => {
 
             const originalPath = audioFile.filepath
             const convertedPath = `${originalPath}.wav`
-            await new Promise((resolve, reject) => {
+            await new Promise((resolve, reject) =>
                 ffmpeg(originalPath)
-                    .toFormat('wav')
-                    .on('error', reject)
-                    .on('end', resolve)
-                    .save(convertedPath)
-            })
-
+                .toFormat('wav')
+                .on('error', reject)
+                .on('end', resolve)
+                .save(convertedPath)
+            )
             const transcriptResult = await spitchClient.speech.transcribe({
                 content: fs.createReadStream(convertedPath),
                 language: 'en',
@@ -186,32 +226,38 @@ app.post('/api/voice-command', verifyToken, async(req, res) => {
             fs.unlinkSync(convertedPath)
 
             if (conversationState === 'idle') {
-                let taskData = {
-                    title: text,
-                    priority: 'medium',
-                    dueDate: null,
-                    user: req.user._id
+                const analysis = await analyzeTextWithGemini(text)
+                if (analysis.action === 'create') {
+                    if (!analysis.task_data.title)
+                        return res
+                            .status(400)
+                            .json({ responseText: "I couldn't understand the task title." })
+                    const newTaskData = {...analysis.task_data, user: req.user._id }
+                    const newTask = new Task(newTaskData)
+                    await newTask.save()
+                    if (!newTask.description) {
+                        return res.json({
+                            status: 'prompt_description',
+                            responseText: `Okay, scheduled "${newTask.title}". What are the details?`,
+                            taskId: newTask._id
+                        })
+                    } else {
+                        return res.json({
+                            status: 'success',
+                            responseText: `Got it. Added "${newTask.title}".`,
+                            updatedTask: newTask
+                        })
+                    }
+                } else {
+                    return res.json({
+                        status: 'success',
+                        responseText: 'Sorry, I can only create tasks right now.'
+                    })
                 }
-                if (text.toLowerCase().includes('urgent')) {
-                    taskData.priority = 'high'
-                    taskData.title = taskData.title.replace(/urgent/gi, '').trim()
-                }
-                if (text.toLowerCase().includes('tomorrow')) {
-                    taskData.dueDate = addDays(new Date(), 1)
-                    taskData.title = taskData.title.replace(/for tomorrow/gi, '').trim()
-                }
-                taskData.title = taskData.title.replace(/^add/i, '').trim()
-                const newTask = new Task(taskData)
-                await newTask.save()
-                res.json({
-                    status: 'prompt_description',
-                    responseText: `Okay, I've scheduled "${newTask.title}". What are the details?`,
-                    taskId: newTask._id
-                })
             } else if (conversationState === 'waiting_for_description' && taskId) {
                 const task = await Task.findOneAndUpdate({ _id: taskId, user: req.user._id }, { description: text }, { new: true })
                 if (!task) return res.status(404).json({ message: 'Task not found.' })
-                res.json({
+                return res.json({
                     status: 'success',
                     responseText: `Got it. I've added the description to "${task.title}".`,
                     updatedTask: task
