@@ -246,8 +246,8 @@ const OnboardingModal = ({ onClose }: { onClose: () => void }) => (
     <div className="bg-white text-gray-800 p-8 rounded-lg shadow-2xl max-w-sm text-center">
       <h3 className="text-2xl font-bold">Welcome to Aura!</h3>
       <p className="mt-4">
-        I'm your AI assistant. To get started, click the purple orb in the
-        bottom-right corner and tell me what you need to do.
+        I'm your AI assistant. To get started, click the pulsing purple orb in
+        the bottom-right corner and tell me what you need to do.
       </p>
       <button
         onClick={onClose}
@@ -328,13 +328,12 @@ export default function DashboardPage() {
   };
 
   const handleVoiceCommand = async () => {
-    setConversationState("idle"); // Set state back to idle immediately
+    setConversationState("idle"); // Immediately reset the button for better UX
     toast.loading("Processing...", { id: "voice-toast" });
     const audioBlob = new Blob(audioChunks.current, { type: "audio/webm" });
     const formData = new FormData();
     formData.append("audio", audioBlob);
 
-    // This is a subtle but important change: the state sent to the server is determined by the activeTaskId, not the UI state
     const currentState = activeTaskId ? "waiting_for_description" : "idle";
     formData.append("state", currentState);
 
@@ -342,19 +341,26 @@ export default function DashboardPage() {
 
     try {
       const res = await api.post("/voice-command", formData);
-      const { status, responseText, taskId, updatedTask } = res.data;
+      const { status, responseText, taskId } = res.data;
+
       playAssistantVoice(responseText);
+
+      // --- THE FIX IS HERE ---
+      // This new logic is simpler and more robust.
       if (status === "prompt_description") {
         setConversationState("waiting_for_description");
         setActiveTaskId(taskId);
-        fetchTasks();
+        fetchTasks(); // This re-fetches the list, guaranteeing the new task appears.
       } else if (status === "success") {
         setConversationState("idle");
         setActiveTaskId(null);
-        setTasks((currentTasks) =>
-          currentTasks.map((t) => (t._id === updatedTask._id ? updatedTask : t))
-        );
+        fetchTasks(); // This re-fetches the list, guaranteeing the updated description appears.
+      } else if (status === "no_action") {
+        // If Gemini couldn't figure out what to do, just reset the state.
+        setConversationState("idle");
+        setActiveTaskId(null);
       }
+
       toast.success("Done!", { id: "voice-toast" });
     } catch (error) {
       toast.error("Sorry, something went wrong.", { id: "voice-toast" });
@@ -364,7 +370,7 @@ export default function DashboardPage() {
 
   const handleMicClick = async () => {
     if (mediaRecorder.current && mediaRecorder.current.state === "recording") {
-      mediaRecorder.current.stop(); // This will trigger the 'stop' event listener
+      mediaRecorder.current.stop();
       return;
     }
     try {
@@ -379,9 +385,8 @@ export default function DashboardPage() {
         audioChunks.current.push(event.data)
       );
 
-      // The 'stop' event now handles all cleanup and triggers the next action
       mediaRecorder.current.addEventListener("stop", () => {
-        stream.getTracks().forEach((track) => track.stop()); // Clean up microphone access
+        stream.getTracks().forEach((track) => track.stop());
         handleVoiceCommand();
       });
     } catch (error) {
