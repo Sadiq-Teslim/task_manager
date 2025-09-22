@@ -50,14 +50,14 @@ mongoose
     .connect(process.env.MONGO_URI)
     .then(() => console.log('MongoDB connected successfully.'))
     .catch(err => console.error('MongoDB connection error:', err))
-const ffmpegPath = path.join(
-    process.cwd(),
-    'vendor',
-    'ffmpeg',
-    'bin',
-    'ffmpeg.exe'
-)
-ffmpeg.setFfmpegPath(ffmpegPath)
+    // const ffmpegPath = path.join(
+    //     process.cwd(),
+    //     'vendor',
+    //     'ffmpeg',
+    //     'bin',
+    //     'ffmpeg.exe'
+    // )
+    // ffmpeg.setFfmpegPath(ffmpegPath)
 const spitchClient = new Spitch()
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
 const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' })
