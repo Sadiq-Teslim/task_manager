@@ -13,9 +13,10 @@ import {
   FaUser,
   FaCog,
   FaSignOutAlt,
+  FaPaperPlane,
 } from "react-icons/fa";
 import { format } from "date-fns";
-// NOTE: The 'react-simple-arrows' import has been completely removed.
+// NOTE: All imports for 'react-audio-visualize' and 'react-simple-arrows' have been completely removed.
 
 // --- TYPE DEFINITIONS ---
 interface Task {
@@ -32,13 +33,11 @@ type ConversationState = "idle" | "listening" | "waiting_for_description";
 
 const Sidebar = () => {
   const { logout } = useAuth();
-
   const handleLogout = async () => {
     await api.post("/auth/logout");
     logout();
     toast.success("Logged out.");
   };
-
   return (
     <aside className="w-64 bg-white border-r border-gray-200 p-6 flex-shrink-0 flex flex-col h-screen">
       <h1 className="text-3xl font-bold text-purple-600">Aura</h1>
@@ -89,22 +88,20 @@ const Header = ({ onAddTask }: { onAddTask: () => void }) => (
 
 const TaskCard = ({ task, onUpdate }: { task: Task; onUpdate: () => void }) => {
   const priorityClasses = {
-    high: { border: "border-red-500", bg: "bg-red-500/10" },
-    medium: { border: "border-yellow-500", bg: "bg-yellow-500/10" },
-    low: { border: "border-blue-500", bg: "bg-blue-500/10" },
+    high: "border-red-500",
+    medium: "border-yellow-500",
+    low: "border-blue-500",
   };
-
   const handleDelete = async () => {
     await api.delete(`/tasks/${task._id}`);
     toast.success("Task deleted!");
     onUpdate();
   };
-
   return (
     <div
       className={`bg-white p-4 rounded-md shadow-sm border-l-4 ${
-        priorityClasses[task.priority].border
-      } ${priorityClasses[task.priority].bg}`}
+        priorityClasses[task.priority]
+      }`}
     >
       <div className="flex justify-between items-start">
         <h3 className="font-semibold text-gray-800 pr-2">{task.title}</h3>
@@ -160,7 +157,6 @@ const AddTaskModal = ({
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState("medium");
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title) return toast.error("Title is required.");
@@ -178,7 +174,6 @@ const AddTaskModal = ({
       toast.error("Failed to add task.");
     }
   };
-
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
       <div className="bg-white p-8 rounded-lg shadow-2xl max-w-lg w-full text-gray-800">
@@ -243,7 +238,6 @@ const AddTaskModal = ({
   );
 };
 
-// --- SIMPLIFIED ONBOARDING MODAL (No Arrow) ---
 const OnboardingModal = ({ onClose }: { onClose: () => void }) => (
   <div
     className="fixed inset-0 bg-black bg-opacity-70 z-[60] flex items-center justify-center"
@@ -252,8 +246,8 @@ const OnboardingModal = ({ onClose }: { onClose: () => void }) => (
     <div className="bg-white text-gray-800 p-8 rounded-lg shadow-2xl max-w-sm text-center">
       <h3 className="text-2xl font-bold">Welcome to Aura!</h3>
       <p className="mt-4">
-        I'm your AI assistant. To get started, click the pulsing purple orb in
-        the bottom-right corner and tell me what you need to do.
+        I'm your AI assistant. To get started, click the purple orb in the
+        bottom-right corner and tell me what you need to do.
       </p>
       <button
         onClick={onClose}
@@ -272,20 +266,22 @@ const AuraButton = ({
   state: ConversationState;
   onClick: () => void;
 }) => (
-  <div className="fixed bottom-10 right-10 z-50">
+  <div className="fixed bottom-10 right-10 z-[100]">
     <button
       onClick={onClick}
-      className={`w-20 h-20 rounded-full flex items-center justify-center text-3xl text-white shadow-2xl transition-all duration-300 ${
-        state === "listening"
-          ? "bg-red-500 animate-pulse"
-          : "bg-purple-600 hover:bg-purple-500"
-      } ${
-        state === "waiting_for_description"
-          ? "ring-4 ring-yellow-400 scale-110"
-          : ""
-      }`}
+      className={`w-20 h-20 rounded-full flex items-center justify-center text-3xl text-white shadow-2xl transition-all duration-300 
+                ${
+                  state === "listening"
+                    ? "bg-green-500 scale-110"
+                    : "bg-purple-600 hover:bg-purple-500"
+                } 
+                ${
+                  state === "waiting_for_description"
+                    ? "ring-4 ring-yellow-400"
+                    : ""
+                }`}
     >
-      <FaMicrophone />
+      {state === "listening" ? <FaPaperPlane /> : <FaMicrophone />}
     </button>
   </div>
 );
@@ -313,9 +309,7 @@ export default function DashboardPage() {
   useEffect(() => {
     fetchTasks();
     const hasSeenOnboarding = localStorage.getItem("hasSeenAuraOnboarding");
-    if (!hasSeenOnboarding) {
-      setShowOnboarding(true);
-    }
+    if (!hasSeenOnboarding) setShowOnboarding(true);
   }, []);
 
   const handleCloseOnboarding = () => {
@@ -334,13 +328,16 @@ export default function DashboardPage() {
   };
 
   const handleVoiceCommand = async () => {
+    setConversationState("idle"); // Set state back to idle immediately
     toast.loading("Processing...", { id: "voice-toast" });
     const audioBlob = new Blob(audioChunks.current, { type: "audio/webm" });
     const formData = new FormData();
     formData.append("audio", audioBlob);
-    const currentState =
-      conversationState === "listening" ? "idle" : conversationState;
+
+    // This is a subtle but important change: the state sent to the server is determined by the activeTaskId, not the UI state
+    const currentState = activeTaskId ? "waiting_for_description" : "idle";
     formData.append("state", currentState);
+
     if (activeTaskId) formData.append("taskId", activeTaskId);
 
     try {
@@ -367,7 +364,7 @@ export default function DashboardPage() {
 
   const handleMicClick = async () => {
     if (mediaRecorder.current && mediaRecorder.current.state === "recording") {
-      mediaRecorder.current.stop();
+      mediaRecorder.current.stop(); // This will trigger the 'stop' event listener
       return;
     }
     try {
@@ -377,10 +374,16 @@ export default function DashboardPage() {
       audioChunks.current = [];
       setConversationState("listening");
       toast("Listening...", { icon: "🎤" });
+
       mediaRecorder.current.addEventListener("dataavailable", (event) =>
         audioChunks.current.push(event.data)
       );
-      mediaRecorder.current.addEventListener("stop", handleVoiceCommand);
+
+      // The 'stop' event now handles all cleanup and triggers the next action
+      mediaRecorder.current.addEventListener("stop", () => {
+        stream.getTracks().forEach((track) => track.stop()); // Clean up microphone access
+        handleVoiceCommand();
+      });
     } catch (error) {
       toast.error("Microphone access is required.");
     }

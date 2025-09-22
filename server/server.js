@@ -23,19 +23,22 @@ const { GoogleGenerativeAI } = require('@google/generative-ai')
 const app = express()
 const PORT = process.env.PORT || 5000
 const JWT_SECRET = process.env.JWT_SECRET
+const API_BASE_URL = process.env.BACKEND_URL || 'http://localhost:5000'
 
 // --- CORE MIDDLEWARE ---
-const allowedOrigins = ['http://localhost:5173', process.env.FRONTEND_URL];
-app.use(cors({
-    origin: function(origin, callback) {
-        if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-            callback(null, true);
-        } else {
-            callback(new Error('Not allowed by CORS'));
-        }
-    },
-    credentials: true
-}));
+const allowedOrigins = ['http://localhost:5173', process.env.FRONTEND_URL]
+app.use(
+    cors({
+        origin: function(origin, callback) {
+            if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+                callback(null, true)
+            } else {
+                callback(new Error('Not allowed by CORS'))
+            }
+        },
+        credentials: true
+    })
+)
 app.use(express.json())
 app.use(cookieParser())
 app.use('/static', express.static(path.join(__dirname, 'audio')))
@@ -95,13 +98,17 @@ async function analyzeTextWithGemini(text) {
     Your JSON response: { "action": "update", "task_data": { "title": null, "description": null, "priority": null, "dueDate": null, "status": "done" }, "search_query": "presentation task" }
     Now, analyze this user command: "${text}"
   `
-    const result = await model.generateContent(prompt)
-    const response = await result.response
-    const jsonText = response
-        .text()
-        .replace(/```json|```/g, '')
-        .trim()
-    return JSON.parse(jsonText)
+
+    // Use generateContentStream for a faster "time to first byte"
+    const result = await model.generateContentStream(prompt)
+
+    let jsonText = ''
+    for await (const chunk of result.stream) {
+        jsonText += chunk.text()
+    }
+
+    const cleanJsonText = jsonText.replace(/```json|```/g, '').trim()
+    return JSON.parse(cleanJsonText)
 }
 
 // --- ====== API ENDPOINTS ====== ---
@@ -209,13 +216,18 @@ app.post('/api/voice-command', verifyToken, async(req, res) => {
 
             const originalPath = audioFile.filepath
             const convertedPath = `${originalPath}.wav`
-            await new Promise((resolve, reject) =>
+
+            // --- STRATEGY 3: FASTER AUDIO CONVERSION ---
+            await new Promise((resolve, reject) => {
                 ffmpeg(originalPath)
-                .toFormat('wav')
-                .on('error', reject)
-                .on('end', resolve)
-                .save(convertedPath)
-            )
+                    .toFormat('wav')
+                    .audioBitrate('96k') // Lower bitrate
+                    .audioFrequency(24000) // Lower sample rate
+                    .on('error', reject)
+                    .on('end', resolve)
+                    .save(convertedPath)
+            })
+
             const transcriptResult = await spitchClient.speech.transcribe({
                 content: fs.createReadStream(convertedPath),
                 language: 'en',
@@ -284,7 +296,7 @@ app.post('/api/tts', verifyToken, async(req, res) => {
     const blob = await ttsResponse.blob()
     const buffer = Buffer.from(await blob.arrayBuffer())
     fs.writeFileSync(filepath, buffer)
-    const audioUrl = `http://localhost:5000/static/${filename}`
+    const audioUrl = `${API_BASE_URL}/static/${filename}`
     res.json({ audioUrl })
     setTimeout(() => {
         if (fs.existsSync(filepath)) fs.unlinkSync(filepath)
@@ -292,4 +304,4 @@ app.post('/api/tts', verifyToken, async(req, res) => {
 })
 
 // --- START SERVER ---
-app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`))
