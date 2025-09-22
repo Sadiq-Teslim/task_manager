@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 /* eslint-disable @typescript-eslint/no-unused-vars */
 // client/src/pages/DashboardPage.tsx
 
@@ -16,7 +17,14 @@ import {
   FaPaperPlane,
 } from "react-icons/fa";
 import { format } from "date-fns";
-// NOTE: All imports for 'react-audio-visualize' and 'react-simple-arrows' have been completely removed.
+import {
+  DndContext,
+  useDraggable,
+  useDroppable,
+} from "@dnd-kit/core";
+import type {
+  DragEndEvent,
+} from "@dnd-kit/core";
 
 // --- TYPE DEFINITIONS ---
 interface Task {
@@ -87,21 +95,34 @@ const Header = ({ onAddTask }: { onAddTask: () => void }) => (
 );
 
 const TaskCard = ({ task, onUpdate }: { task: Task; onUpdate: () => void }) => {
+  const { attributes, listeners, setNodeRef, transform } = useDraggable({
+    id: task._id,
+    data: { task },
+  });
+  const style = transform
+    ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` }
+    : undefined;
   const priorityClasses = {
     high: "border-red-500",
     medium: "border-yellow-500",
     low: "border-blue-500",
   };
+
   const handleDelete = async () => {
     await api.delete(`/tasks/${task._id}`);
     toast.success("Task deleted!");
     onUpdate();
   };
+
   return (
     <div
+      ref={setNodeRef}
+      style={style}
+      {...listeners}
+      {...attributes}
       className={`bg-white p-4 rounded-md shadow-sm border-l-4 ${
         priorityClasses[task.priority]
-      }`}
+      } touch-none cursor-grab`}
     >
       <div className="flex justify-between items-start">
         <h3 className="font-semibold text-gray-800 pr-2">{task.title}</h3>
@@ -117,7 +138,7 @@ const TaskCard = ({ task, onUpdate }: { task: Task; onUpdate: () => void }) => {
       )}
       {task.dueDate && (
         <p className="text-purple-600 text-xs mt-3 font-semibold">
-          Due: {format(new Date(task.dueDate), "MMM d, yyyy")}
+          Due: {format(new Date(task.dueDate), "MMM d, yy")}
         </p>
       )}
     </div>
@@ -125,27 +146,37 @@ const TaskCard = ({ task, onUpdate }: { task: Task; onUpdate: () => void }) => {
 };
 
 const TaskColumn = ({
+  id,
   title,
   tasks,
   onUpdate,
 }: {
+  id: string;
   title: string;
   tasks: Task[];
   onUpdate: () => void;
-}) => (
-  <div className="bg-gray-100 p-4 rounded-lg w-full h-full">
-    <div className="flex justify-between items-center mb-4">
-      <h2 className="font-bold text-gray-700">
-        {title} ({tasks.length})
-      </h2>
+}) => {
+  const { setNodeRef, isOver } = useDroppable({ id });
+  return (
+    <div
+      ref={setNodeRef}
+      className={`bg-gray-100 p-4 rounded-lg w-full h-full transition-colors ${
+        isOver ? "bg-purple-100" : ""
+      }`}
+    >
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="font-bold text-gray-700">
+          {title} ({tasks.length})
+        </h2>
+      </div>
+      <div className="space-y-4">
+        {tasks.map((task) => (
+          <TaskCard key={task._id} task={task} onUpdate={onUpdate} />
+        ))}
+      </div>
     </div>
-    <div className="space-y-4">
-      {tasks.map((task) => (
-        <TaskCard key={task._id} task={task} onUpdate={onUpdate} />
-      ))}
-    </div>
-  </div>
-);
+  );
+};
 
 const AddTaskModal = ({
   onClose,
@@ -269,17 +300,11 @@ const AuraButton = ({
   <div className="fixed bottom-10 right-10 z-[100]">
     <button
       onClick={onClick}
-      className={`w-20 h-20 rounded-full flex items-center justify-center text-3xl text-white shadow-2xl transition-all duration-300 
-                ${
-                  state === "listening"
-                    ? "bg-green-500 scale-110"
-                    : "bg-purple-600 hover:bg-purple-500"
-                } 
-                ${
-                  state === "waiting_for_description"
-                    ? "ring-4 ring-yellow-400"
-                    : ""
-                }`}
+      className={`w-20 h-20 rounded-full flex items-center justify-center text-3xl text-white shadow-2xl transition-all duration-300 ${
+        state === "listening"
+          ? "bg-green-500 scale-110"
+          : "bg-purple-600 hover:bg-purple-500"
+      } ${state === "waiting_for_description" ? "ring-4 ring-yellow-400" : ""}`}
     >
       {state === "listening" ? <FaPaperPlane /> : <FaMicrophone />}
     </button>
@@ -288,6 +313,7 @@ const AuraButton = ({
 
 // --- MAIN DASHBOARD PAGE ---
 export default function DashboardPage() {
+  const { logout } = useAuth();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [conversationState, setConversationState] =
     useState<ConversationState>("idle");
@@ -301,15 +327,16 @@ export default function DashboardPage() {
     try {
       const res = await api.get("/tasks");
       setTasks(res.data);
-    } catch (error) {
-      console.error("Failed to fetch tasks", error);
+    } catch (error: any) {
+      if (error.response?.status === 401) {
+        toast.error("Your session has expired. Please log in again.");
+        logout();
+      }
     }
   };
 
   useEffect(() => {
     fetchTasks();
-    const hasSeenOnboarding = localStorage.getItem("hasSeenAuraOnboarding");
-    if (!hasSeenOnboarding) setShowOnboarding(true);
   }, []);
 
   const handleCloseOnboarding = () => {
@@ -328,39 +355,30 @@ export default function DashboardPage() {
   };
 
   const handleVoiceCommand = async () => {
-    setConversationState("idle"); // Immediately reset the button for better UX
+    setConversationState("idle");
     toast.loading("Processing...", { id: "voice-toast" });
     const audioBlob = new Blob(audioChunks.current, { type: "audio/webm" });
     const formData = new FormData();
     formData.append("audio", audioBlob);
-
     const currentState = activeTaskId ? "waiting_for_description" : "idle";
     formData.append("state", currentState);
-
     if (activeTaskId) formData.append("taskId", activeTaskId);
 
     try {
       const res = await api.post("/voice-command", formData);
       const { status, responseText, taskId } = res.data;
-
       playAssistantVoice(responseText);
 
-      // --- THE FIX IS HERE ---
-      // This new logic is simpler and more robust.
       if (status === "prompt_description") {
         setConversationState("waiting_for_description");
         setActiveTaskId(taskId);
-        fetchTasks(); // This re-fetches the list, guaranteeing the new task appears.
-      } else if (status === "success") {
-        setConversationState("idle");
-        setActiveTaskId(null);
-        fetchTasks(); // This re-fetches the list, guaranteeing the updated description appears.
-      } else if (status === "no_action") {
-        // If Gemini couldn't figure out what to do, just reset the state.
+      } else {
         setConversationState("idle");
         setActiveTaskId(null);
       }
 
+      // Always re-fetch tasks to ensure the UI is in sync with the database.
+      fetchTasks();
       toast.success("Done!", { id: "voice-toast" });
     } catch (error) {
       toast.error("Sorry, something went wrong.", { id: "voice-toast" });
@@ -380,11 +398,9 @@ export default function DashboardPage() {
       audioChunks.current = [];
       setConversationState("listening");
       toast("Listening...", { icon: "🎤" });
-
       mediaRecorder.current.addEventListener("dataavailable", (event) =>
         audioChunks.current.push(event.data)
       );
-
       mediaRecorder.current.addEventListener("stop", () => {
         stream.getTracks().forEach((track) => track.stop());
         handleVoiceCommand();
@@ -394,9 +410,30 @@ export default function DashboardPage() {
     }
   };
 
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (over && active.id !== over.id) {
+      const activeId = String(active.id);
+      const newStatus = String(over.id) as Task["status"];
+      setTasks((tasks) =>
+        tasks.map((task) =>
+          task._id === activeId ? { ...task, status: newStatus } : task
+        )
+      );
+      try {
+        await api.patch(`/tasks/${activeId}`, { status: newStatus });
+        toast.success("Task status updated!");
+      } catch (error) {
+        toast.error("Failed to sync. Reverting.");
+        fetchTasks();
+      }
+    }
+  };
+
   const todoTasks = tasks.filter((t) => t.status === "todo");
   const inprogressTasks = tasks.filter((t) => t.status === "inprogress");
   const reviewTasks = tasks.filter((t) => t.status === "review");
+  const doneTasks = tasks.filter((t) => t.status === "done");
 
   return (
     <div className="bg-gray-50 min-h-screen text-gray-800 flex">
@@ -404,19 +441,34 @@ export default function DashboardPage() {
       <div className="flex-grow flex flex-col h-screen">
         <Header onAddTask={() => setIsModalOpen(true)} />
         <main className="p-8 flex-grow overflow-y-auto">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 h-full">
-            <TaskColumn title="To-do" tasks={todoTasks} onUpdate={fetchTasks} />
-            <TaskColumn
-              title="In Progress"
-              tasks={inprogressTasks}
-              onUpdate={fetchTasks}
-            />
-            <TaskColumn
-              title="In Review"
-              tasks={reviewTasks}
-              onUpdate={fetchTasks}
-            />
-          </div>
+          <DndContext onDragEnd={handleDragEnd}>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-8 h-full">
+              <TaskColumn
+                id="todo"
+                title="To-do"
+                tasks={todoTasks}
+                onUpdate={fetchTasks}
+              />
+              <TaskColumn
+                id="inprogress"
+                title="In Progress"
+                tasks={inprogressTasks}
+                onUpdate={fetchTasks}
+              />
+              <TaskColumn
+                id="review"
+                title="In Review"
+                tasks={reviewTasks}
+                onUpdate={fetchTasks}
+              />
+              <TaskColumn
+                id="done"
+                title="Done"
+                tasks={doneTasks}
+                onUpdate={fetchTasks}
+              />
+            </div>
+          </DndContext>
         </main>
       </div>
       <AuraButton state={conversationState} onClick={handleMicClick} />
