@@ -1,5 +1,7 @@
-# Use an official Node.js runtime as a parent image
-FROM node:18-slim
+# server/Dockerfile (FINAL, CORRECTED VERSION)
+
+# Use a MODERN Node.js runtime as a parent image (THE FIX IS HERE)
+FROM node:20-slim
 
 # Set the working directory in the container
 WORKDIR /usr/src/app
