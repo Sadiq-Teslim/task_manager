@@ -26,7 +26,7 @@ const JWT_SECRET = process.env.JWT_SECRET
 const API_BASE_URL = process.env.BACKEND_URL || 'http://localhost:5000'
 
 // --- CORE MIDDLEWARE ---
-const allowedOrigins = ['http://localhost:5173', process.env.FRONTEND_URL]
+const allowedOrigins = ['http://localhost:5173', 'https://aura-tm.onrender.com', process.env.FRONTEND_URL]
 app.use(
     cors({
         origin: function(origin, callback) {
